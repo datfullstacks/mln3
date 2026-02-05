@@ -88,6 +88,10 @@ export default function PlayPage() {
     const supabase = getSupabaseBrowser();
     let channel: RealtimeChannel | null = null;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
+    const startPolling = () => {
+      if (pollTimer) return;
+      pollTimer = setInterval(syncState, 5000);
+    };
 
     const syncState = async () => {
       try {
@@ -118,6 +122,7 @@ export default function PlayPage() {
     };
 
     syncState();
+    startPolling();
 
     if (supabase) {
       channel = supabase.channel(`session:${player.code}`, {
@@ -160,9 +165,11 @@ export default function PlayPage() {
           setLeaderboard(data?.entries ?? []);
         }
       );
-      channel.subscribe();
-    } else {
-      pollTimer = setInterval(syncState, 4000);
+      channel.subscribe((status) => {
+        if (status !== "SUBSCRIBED") {
+          startPolling();
+        }
+      });
     }
 
     return () => {

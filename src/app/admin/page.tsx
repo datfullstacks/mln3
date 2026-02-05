@@ -144,6 +144,10 @@ export default function AdminPage() {
     const supabase = getSupabaseBrowser();
     let channel: RealtimeChannel | null = null;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
+    const startPolling = () => {
+      if (pollTimer) return;
+      pollTimer = setInterval(syncState, 5000);
+    };
 
     const syncState = async () => {
       try {
@@ -162,6 +166,7 @@ export default function AdminPage() {
     };
 
     syncState();
+    startPolling();
 
     if (supabase) {
       channel = supabase.channel(`session:${code}`, {
@@ -194,9 +199,11 @@ export default function AdminPage() {
         if (!active) return;
         setStatus("ended");
       });
-      channel.subscribe();
-    } else {
-      pollTimer = setInterval(syncState, 4000);
+      channel.subscribe((status) => {
+        if (status !== "SUBSCRIBED") {
+          startPolling();
+        }
+      });
     }
 
     return () => {
