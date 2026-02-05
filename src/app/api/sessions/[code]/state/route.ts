@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/db";
 import { Session } from "@/lib/models/session";
-import { broadcastLobbyUpdate, broadcastSessionEnded } from "@/lib/realtime";
+import { buildLeaderboardPayload, buildLobbyPayload } from "@/lib/realtime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function POST(
+export async function GET(
   _request: Request,
   { params }: { params: Promise<{ code: string }> }
 ) {
@@ -14,21 +14,18 @@ export async function POST(
   const code = rawCode.toUpperCase();
 
   await connectDB();
-
   const session = await Session.findOne({ code });
   if (!session) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
 
-  if (session.status === "ended") {
-    return NextResponse.json({ code, status: session.status });
-  }
+  const lobby = await buildLobbyPayload(code);
+  const leaderboard = await buildLeaderboardPayload(code);
 
-  session.status = "ended";
-  await session.save();
-
-  await broadcastSessionEnded(code);
-  await broadcastLobbyUpdate(code);
-
-  return NextResponse.json({ code, status: session.status });
+  return NextResponse.json({
+    code,
+    status: session.status,
+    lobby,
+    leaderboard,
+  });
 }

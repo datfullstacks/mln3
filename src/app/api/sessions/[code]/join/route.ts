@@ -5,6 +5,10 @@ import { Session } from "@/lib/models/session";
 import { Participant } from "@/lib/models/participant";
 import { LeaderboardEntry } from "@/lib/models/leaderboard";
 import { sanitizeUsername } from "@/lib/sessions";
+import {
+  broadcastLeaderboardUpdate,
+  broadcastLobbyUpdate,
+} from "@/lib/realtime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -69,6 +73,9 @@ export async function POST(
     },
     { upsert: true }
   );
+
+  await broadcastLobbyUpdate(code);
+  await broadcastLeaderboardUpdate(code);
 
   return NextResponse.json({
     playerId,

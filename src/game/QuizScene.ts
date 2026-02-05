@@ -605,7 +605,10 @@ export class QuizScene extends Phaser.Scene {
       );
       if (candidates.length > 0) {
         const pick = candidates[Math.floor(Math.random() * candidates.length)];
-        this.roundQuestions[0] = { ...pick, id: `${pick.id}-wind` };
+        const prepared = this.shuffleQuestionOptions(
+          this.normalizeQuestion({ ...pick, id: `${pick.id}-wind` })
+        );
+        this.roundQuestions[0] = prepared;
       }
     }
     this.totalQuestions = this.roundQuestions.length;
@@ -624,12 +627,14 @@ export class QuizScene extends Phaser.Scene {
   }
 
   private prepareRound(round: RoundKey, targetCount: number) {
-    const base = [...(this.questionsByRound[round] || [])];
+    const base = [...(this.questionsByRound[round] || [])].map((question) =>
+      this.normalizeQuestion(question)
+    );
     const shuffled = this.shuffle(base);
     if (shuffled.length === 0) return [];
 
     if (shuffled.length >= targetCount) {
-      return shuffled.slice(0, targetCount);
+      return shuffled.slice(0, targetCount).map((question) => this.shuffleQuestionOptions(question));
     }
 
     const result: QuizQuestion[] = [...shuffled];
@@ -639,7 +644,7 @@ export class QuizScene extends Phaser.Scene {
       result.push({ ...source, id: `${source.id}-${result.length}` });
       index += 1;
     }
-    return result;
+    return result.map((question) => this.shuffleQuestionOptions(question));
   }
 
   private renderRoundIntro() {
@@ -1904,6 +1909,46 @@ export class QuizScene extends Phaser.Scene {
       [array[i], array[j]] = [array[j], array[i]];
     }
     return array;
+  }
+
+  private normalizeQuestion(question: QuizQuestion): QuizQuestion {
+    const options = Array.isArray(question.options)
+      ? question.options.map((option) => option.trim()).filter((option) => option.length > 0)
+      : [];
+    if (options.length < 2) {
+      return { ...question, options: ["..."], correctIndex: 0 };
+    }
+    const safeCorrect = Math.min(Math.max(0, question.correctIndex ?? 0), options.length - 1);
+    const nearCorrect = Array.isArray(question.nearCorrect)
+      ? question.nearCorrect
+          .map((value) => Math.round(value))
+          .filter((value) => value >= 0 && value < options.length && value !== safeCorrect)
+      : undefined;
+    return {
+      ...question,
+      options,
+      correctIndex: safeCorrect,
+      nearCorrect: nearCorrect && nearCorrect.length > 0 ? nearCorrect : undefined,
+    };
+  }
+
+  private shuffleQuestionOptions(question: QuizQuestion): QuizQuestion {
+    const count = question.options.length;
+    if (count < 2) return question;
+    const indices = this.shuffle(Array.from({ length: count }, (_, i) => i));
+    const options = indices.map((i) => question.options[i]);
+    const correctIndex = Math.max(0, indices.indexOf(question.correctIndex));
+    const nearCorrect = Array.isArray(question.nearCorrect)
+      ? question.nearCorrect
+          .map((index) => indices.indexOf(index))
+          .filter((index) => index >= 0 && index !== correctIndex)
+      : undefined;
+    return {
+      ...question,
+      options,
+      correctIndex,
+      nearCorrect: nearCorrect && nearCorrect.length > 0 ? nearCorrect : undefined,
+    };
   }
 
   private notifyScore(score: number) {

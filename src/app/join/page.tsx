@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -26,7 +26,6 @@ export default function JoinPage() {
       if (!res.ok) {
         setMessage(data.error || "Không thể tham gia, thử lại.");
       } else {
-        // stash in sessionStorage for quick access
         sessionStorage.setItem(
           "player",
           JSON.stringify({

@@ -1,9 +1,10 @@
-"use client";
+﻿"use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
-import type { Socket } from "socket.io-client";
+import type { RealtimeChannel } from "@supabase/supabase-js";
 import PhaserGame from "@/components/PhaserGame";
+import { getSupabaseBrowser } from "@/lib/supabase";
 
 interface PlayerInfo {
   playerId: string;
@@ -13,11 +14,7 @@ interface PlayerInfo {
 
 type LobbyUpdatePayload = {
   participants?: { playerId: string; username: string }[];
-  status?: "lobby" | "running";
-};
-
-type SessionErrorPayload = {
-  error?: string;
+  status?: "lobby" | "running" | "ended";
 };
 
 type LeaderboardUpdatePayload = {
@@ -51,7 +48,6 @@ export default function PlayPage() {
   const [endingStatus, setEndingStatus] = useState<"completed" | "eliminated" | null>(
     null
   );
-  const socketRef = useRef<Socket | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -88,51 +84,93 @@ export default function PlayPage() {
 
   useEffect(() => {
     if (!player) return;
-    let socket: Socket | null = null;
     let active = true;
+    const supabase = getSupabaseBrowser();
+    let channel: RealtimeChannel | null = null;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-    const init = async () => {
-      const { io } = await import("socket.io-client");
-      await fetch("/api/socket");
-      socket = io({ path: "/api/socket" });
-      socketRef.current = socket;
-      socket.emit("session:join", {
-        code: player.code,
-        playerId: player.playerId,
-        username: player.username,
-        role: "player",
-      });
-      socket.on("lobby:update", (payload: LobbyUpdatePayload) => {
+    const syncState = async () => {
+      try {
+        const res = await fetch(`/api/sessions/${player.code}/state`, {
+          cache: "no-store",
+        });
+        const data = await res.json();
+        if (!res.ok) return;
+        const status =
+          data?.status === "running"
+            ? "running"
+            : data?.status === "ended"
+              ? "ended"
+              : "lobby";
         if (!active) return;
-        if (payload.status) setSessionStatus(payload.status);
+        if (status === "ended") {
+          if (typeof window !== "undefined") {
+            sessionStorage.removeItem("player");
+          }
+          router.push("/join?ended=1");
+          return;
+        }
+        setSessionStatus(status === "running" ? "running" : "lobby");
+        setLeaderboard(data?.leaderboard?.entries ?? []);
+      } catch {
+        // ignore
+      }
+    };
+
+    syncState();
+
+    if (supabase) {
+      channel = supabase.channel(`session:${player.code}`, {
+        config: { broadcast: { self: true } },
       });
-      socket.on("session:start", () => {
+      channel.on(
+        "broadcast",
+        { event: "lobby:update" },
+        (event: { payload: LobbyUpdatePayload }) => {
+          if (!active) return;
+          const data = event.payload;
+          if (!data?.status) return;
+          if (data.status === "ended") {
+            if (typeof window !== "undefined") {
+              sessionStorage.removeItem("player");
+            }
+            router.push("/join?ended=1");
+            return;
+          }
+          setSessionStatus(data.status === "running" ? "running" : "lobby");
+        }
+      );
+      channel.on("broadcast", { event: "session:start" }, () => {
         if (!active) return;
         setSessionStatus("running");
       });
-      socket.on("session:ended", () => {
+      channel.on("broadcast", { event: "session:ended" }, () => {
         if (!active) return;
         if (typeof window !== "undefined") {
           sessionStorage.removeItem("player");
         }
         router.push("/join?ended=1");
       });
-      socket.on("leaderboard:update", (payload: LeaderboardUpdatePayload) => {
-        if (!active) return;
-        setLeaderboard(payload.entries ?? []);
-      });
-      socket.on("session:error", (payload: SessionErrorPayload) => {
-        if (!active) return;
-        console.error(payload?.error || "Session error");
-      });
-    };
-
-    init();
+      channel.on(
+        "broadcast",
+        { event: "leaderboard:update" },
+        (event: { payload: LeaderboardUpdatePayload }) => {
+          if (!active) return;
+          const data = event.payload;
+          setLeaderboard(data?.entries ?? []);
+        }
+      );
+      channel.subscribe();
+    } else {
+      pollTimer = setInterval(syncState, 4000);
+    }
 
     return () => {
       active = false;
-      socket?.disconnect();
-      socketRef.current = null;
+      if (pollTimer) clearInterval(pollTimer);
+      if (channel && supabase) {
+        supabase.removeChannel(channel);
+      }
     };
   }, [player, router]);
 
@@ -159,13 +197,21 @@ export default function PlayPage() {
         event && "detail" in event ? (event as CustomEvent).detail : undefined;
       const score =
         detail && typeof detail.score === "number" ? detail.score : null;
-      if (score === null || !player || !socketRef.current) return;
-      socketRef.current.emit("score:submit", {
-        code: player.code,
-        playerId: player.playerId,
-        username: player.username,
-        score,
-      });
+      const totalTimeMs =
+        detail && typeof detail.totalTimeMs === "number"
+          ? detail.totalTimeMs
+          : undefined;
+      if (score === null || !player) return;
+      fetch(`/api/sessions/${player.code}/score`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          playerId: player.playerId,
+          username: player.username,
+          score,
+          totalTimeMs,
+        }),
+      }).catch(() => undefined);
     };
 
     window.addEventListener("game:leaderboard", handleShow);
@@ -193,7 +239,7 @@ export default function PlayPage() {
                 Đang chờ
               </p>
               <p className="mt-2 text-lg text-[#3b2f2a]">
-                Chờ đội thành chờ người chơi khác
+                Chờ người chơi khác
               </p>
               <p className="mt-2 text-sm text-[#8b7a6f]">
                 Hãy giữ trang này mở.
@@ -201,8 +247,7 @@ export default function PlayPage() {
             </div>
           </div>
         )}
-
-                {sessionStatus === "running" && !endingStatus && !showLeaderboard && (
+        {sessionStatus === "running" && !endingStatus && !showLeaderboard && (
           <button
             type="button"
             onClick={() => setShowLeaderboard(true)}
@@ -294,3 +339,5 @@ export default function PlayPage() {
     </main>
   );
 }
+
+

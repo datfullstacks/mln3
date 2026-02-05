@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/db";
 import { Session } from "@/lib/models/session";
-import { getIO } from "@/lib/socket";
+import { broadcastLobbyUpdate, broadcastSessionStart } from "@/lib/realtime";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,11 +31,8 @@ export async function POST(
   session.status = "running";
   await session.save();
 
-  const io = getIO();
-  io?.to(`session:${code}`).emit("session:start", {
-    code,
-    startedAt: new Date().toISOString(),
-  });
+  await broadcastSessionStart(code);
+  await broadcastLobbyUpdate(code);
 
   return NextResponse.json({ code, status: session.status });
 }

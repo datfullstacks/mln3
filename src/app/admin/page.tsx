@@ -1,7 +1,8 @@
-"use client";
+﻿"use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import type { Socket } from "socket.io-client";
+import type { RealtimeChannel } from "@supabase/supabase-js";
+import { getSupabaseBrowser } from "@/lib/supabase";
 
 type LobbyUpdatePayload = {
   participants?: { playerId: string; username: string }[];
@@ -101,12 +102,12 @@ export default function AdminPage() {
       const res = await fetch("/api/sessions", { cache: "no-store" });
       const data = await res.json();
       if (!res.ok) {
-        setSessionsError(data.error || "Không lấy được danh sách phiên.");
+        setSessionsError(data.error || "KhÃ´ng láº¥y đÆ°á»£c danh sÃ¡ch phiÃªn.");
       } else {
         setSessions(Array.isArray(data.sessions) ? data.sessions : []);
       }
     } catch {
-      setSessionsError("Lỗi mạng khi tải danh sách phiên.");
+      setSessionsError("Lá»—i máº¡ng khi táº£i danh sÃ¡ch phiÃªn.");
     } finally {
       setSessionsLoading(false);
     }
@@ -139,34 +140,71 @@ export default function AdminPage() {
 
   useEffect(() => {
     if (!code) return;
-    let socket: Socket | null = null;
     let active = true;
+    const supabase = getSupabaseBrowser();
+    let channel: RealtimeChannel | null = null;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-    const init = async () => {
-      const { io } = await import("socket.io-client");
-      await fetch("/api/socket");
-      socket = io({ path: "/api/socket" });
-      socket.emit("session:join", { code, role: "admin" });
-      socket.on("lobby:update", (payload: LobbyUpdatePayload) => {
+    const syncState = async () => {
+      try {
+        const res = await fetch(`/api/sessions/${code}/state`, {
+          cache: "no-store",
+        });
+        const data = await res.json();
+        if (!res.ok) return;
         if (!active) return;
-        setParticipants(payload.participants ?? []);
-        if (payload.status) setStatus(payload.status);
+        setStatus(data?.status ?? null);
+        setParticipants(data?.lobby?.participants ?? []);
+        setLeaderboard(data?.leaderboard?.entries ?? []);
+      } catch {
+        // ignore
+      }
+    };
+
+    syncState();
+
+    if (supabase) {
+      channel = supabase.channel(`session:${code}`, {
+        config: { broadcast: { self: true } },
       });
-      socket.on("leaderboard:update", (payload: LeaderboardUpdatePayload) => {
-        if (!active) return;
-        setLeaderboard(payload.entries ?? []);
-      });
-      socket.on("session:start", () => {
+      channel.on(
+        "broadcast",
+        { event: "lobby:update" },
+        (event: { payload: LobbyUpdatePayload }) => {
+          if (!active) return;
+          const data = event.payload;
+          setParticipants(data?.participants ?? []);
+          if (data?.status) setStatus(data.status);
+        }
+      );
+      channel.on(
+        "broadcast",
+        { event: "leaderboard:update" },
+        (event: { payload: LeaderboardUpdatePayload }) => {
+          if (!active) return;
+          const data = event.payload;
+          setLeaderboard(data?.entries ?? []);
+        }
+      );
+      channel.on("broadcast", { event: "session:start" }, () => {
         if (!active) return;
         setStatus("running");
       });
-    };
-
-    init();
+      channel.on("broadcast", { event: "session:ended" }, () => {
+        if (!active) return;
+        setStatus("ended");
+      });
+      channel.subscribe();
+    } else {
+      pollTimer = setInterval(syncState, 4000);
+    }
 
     return () => {
       active = false;
-      socket?.disconnect();
+      if (pollTimer) clearInterval(pollTimer);
+      if (channel && supabase) {
+        supabase.removeChannel(channel);
+      }
     };
   }, [code]);
 
@@ -186,14 +224,14 @@ export default function AdminPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.error || "Không tạo được phiên.");
+        setError(data.error || "KhÃ´ng táº¡o đÆ°á»£c phiÃªn.");
       } else {
         setCode(data.code);
         setStatus(data.status);
         fetchSessions();
       }
     } catch {
-      setError("Có lỗi mạng, thử lại.");
+      setError("CÃ³ lá»—i máº¡ng, thá»­ láº¡i.");
     } finally {
       setLoading(false);
     }
@@ -203,7 +241,7 @@ export default function AdminPage() {
     e.preventDefault();
     const trimmed = watchCode.trim().toUpperCase();
     if (!trimmed) {
-      setError("Vui lòng nhập mã phiên.");
+      setError("Vui lÃ²ng nháº­p mÃ£ phiÃªn.");
       return;
     }
     setError(null);
@@ -223,12 +261,12 @@ export default function AdminPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.error || "Không thể start phiên.");
+        setError(data.error || "KhÃ´ng thá»ƒ start phiÃªn.");
       } else {
         setStatus(data.status);
       }
     } catch {
-      setError("Có lỗi mạng, thử lại.");
+      setError("CÃ³ lá»—i máº¡ng, thá»­ láº¡i.");
     } finally {
       setStarting(false);
     }
@@ -238,7 +276,7 @@ export default function AdminPage() {
     if (!sessionCode) return;
     if (
       typeof window !== "undefined" &&
-      !window.confirm(`Kết thúc phiên ${sessionCode}? Người chơi sẽ bị đưa về trang tham gia.`)
+      !window.confirm(`Káº¿t thÃºc phiÃªn ${sessionCode}? NgÆ°á»i chÆ¡i sáº½ bá»‹ đÆ°a vá» trang tham gia.`)
     ) {
       return;
     }
@@ -250,7 +288,7 @@ export default function AdminPage() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.error || "Không thể kết thúc phiên.");
+        setError(data.error || "KhÃ´ng thá»ƒ káº¿t thÃºc phiÃªn.");
       } else {
         if (code === sessionCode) {
           setStatus(data.status);
@@ -258,7 +296,7 @@ export default function AdminPage() {
         fetchSessions();
       }
     } catch {
-      setError("Có lỗi mạng, thử lại.");
+      setError("CÃ³ lá»—i máº¡ng, thá»­ láº¡i.");
     } finally {
       setEndingCode(null);
     }
@@ -391,24 +429,24 @@ export default function AdminPage() {
     <main className="min-h-screen bg-slate-50 px-6 py-20">
       <div className="mx-auto max-w-lg rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
         <h1 className="text-2xl font-semibold text-slate-900">
-          Admin: tạo phiên
+          Admin: táº¡o phiÃªn
         </h1>
         <p className="mt-2 text-slate-600">
-          Sinh mã code, gửi cho người chơi. Hiện chỉ cần nhập max người và thời
-          gian sống phiên.
+          Sinh mÃ£ code, gá»­i cho ngÆ°á»i chÆ¡i. Hiá»‡n chá»‰ cáº§n nháº­p max ngÆ°á»i vÃ  thá»i
+          gian sá»‘ng phiÃªn.
         </p>
 
         <section className="mt-6 rounded-xl border border-slate-200 bg-slate-50 px-4 py-4">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-slate-800">
-              Phiên hiện tại
+              PhiÃªn hiá»‡n táº¡i
             </h2>
             <button
               type="button"
               onClick={fetchSessions}
               className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-600 transition hover:border-slate-400 hover:text-slate-800"
             >
-              {sessionsLoading ? "Đang tải..." : "Làm mới"}
+              {sessionsLoading ? "Đang táº£i..." : "LÃ m má»›i"}
             </button>
           </div>
 
@@ -418,7 +456,7 @@ export default function AdminPage() {
 
           {sessions.length === 0 && !sessionsLoading ? (
             <p className="mt-3 text-sm text-slate-500">
-              Chưa có phiên đang hoạt động.
+              ChÆ°a cÃ³ phiÃªn đang hoáº¡t đá»™ng.
             </p>
           ) : (
             <div className="mt-3 space-y-2">
@@ -432,7 +470,7 @@ export default function AdminPage() {
                       {session.code}
                     </p>
                     <p className="text-xs text-slate-500">
-                      {session.status} | {session.participantCount}/{session.maxPlayers ?? "-"} | còn {formatRemaining(session.expiresAt)}
+                      {session.status} | {session.participantCount}/{session.maxPlayers ?? "-"} | cÃ²n {formatRemaining(session.expiresAt)}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
@@ -460,31 +498,31 @@ export default function AdminPage() {
 
         <form onSubmit={handleWatch} className="mt-6 space-y-3">
           <label className="text-sm font-semibold text-slate-800">
-            Theo dõi leaderboard theo mã phiên
+            Theo dÃµi leaderboard theo mÃ£ phiÃªn
           </label>
           <div className="flex gap-2">
             <input
               type="text"
               value={watchCode}
               onChange={(e) => setWatchCode(e.target.value)}
-              placeholder="Nhập mã phiên (VD: ABC123)"
+              placeholder="Nháº­p mÃ£ phiÃªn (VD: ABC123)"
               className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
             />
             <button
               type="submit"
               className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
             >
-              Theo dõi
+              Theo dÃµi
             </button>
           </div>
           <p className="text-xs text-slate-500">
-            Sẽ cập nhật realtime khi người chơi gửi điểm.
+            Sáº½ cáº­p nháº­t realtime khi ngÆ°á»i chÆ¡i gá»­i điá»ƒm.
           </p>
         </form>
 
         <form onSubmit={handleCreate} className="mt-6 space-y-4">
           <label className="flex items-center justify-between text-sm font-medium text-slate-700">
-            <span>Giới hạn người chơi</span>
+            <span>Giá»›i háº¡n ngÆ°á»i chÆ¡i</span>
             <input
               type="number"
               min={2}
@@ -495,7 +533,7 @@ export default function AdminPage() {
             />
           </label>
           <label className="flex items-center justify-between text-sm font-medium text-slate-700">
-            <span>Thời gian tồn tại (phút)</span>
+            <span>Thá»i gian tá»“n táº¡i (phÃºt)</span>
             <input
               type="number"
               min={10}
@@ -510,17 +548,17 @@ export default function AdminPage() {
             disabled={loading}
             className="w-full rounded-lg bg-indigo-600 px-4 py-3 text-white transition hover:bg-indigo-700 disabled:opacity-60"
           >
-            {loading ? "Đang tạo..." : "Tạo phiên mới"}
+            {loading ? "Đang táº¡o..." : "Táº¡o phiÃªn má»›i"}
           </button>
         </form>
 
         {code && (
           <div className="mt-6 rounded-lg border border-indigo-100 bg-indigo-50 px-4 py-3">
             <p className="text-sm font-medium text-indigo-700">
-              Mã phiên: <span className="text-lg font-bold">{code}</span>
+              MÃ£ phiÃªn: <span className="text-lg font-bold">{code}</span>
             </p>
             <p className="text-sm text-indigo-700">
-              Trạng thái: {status ?? "lobby"}
+              Tráº¡ng thÃ¡i: {status ?? "lobby"}
             </p>
             <button
               type="button"
@@ -528,7 +566,7 @@ export default function AdminPage() {
               disabled={starting || status === "running" || status === "ended"}
               className="mt-3 w-full rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
             >
-              {starting ? "Đang start..." : "Start phiên"}
+              {starting ? "Đang start..." : "Start phiÃªn"}
             </button>
             <button
               type="button"
@@ -547,7 +585,7 @@ export default function AdminPage() {
             </p>
             {participants.length === 0 ? (
               <p className="mt-2 text-sm text-slate-500">
-                Chưa có dữ liệu điểm.
+                ChÆ°a cÃ³ dá»¯ liá»‡u điá»ƒm.
               </p>
             ) : (
               <ul className="mt-2 space-y-1 text-sm text-slate-600">
@@ -565,7 +603,7 @@ export default function AdminPage() {
             </p>
             {leaderboard.length === 0 ? (
               <p className="mt-2 text-sm text-slate-500">
-                Chưa có dữ liệu điểm.
+                ChÆ°a cÃ³ dá»¯ liá»‡u điá»ƒm.
               </p>
             ) : (
               <div className="mt-2 space-y-2 text-sm text-slate-600">
@@ -574,7 +612,7 @@ export default function AdminPage() {
                     Happy ending
                   </p>
                   <p className="mt-1 text-sm text-[#3b2f2a]">
-                    Tất cả người chơi đều nhận lời chúc viên mãn sau hành trình.
+                    Táº¥t cáº£ ngÆ°á»i chÆ¡i đá»u nháº­n lá»i chÃºc viÃªn mÃ£n sau hÃ nh trÃ¬nh.
                   </p>
                 </div>
                 {leaderboard.map((entry) => {
@@ -817,3 +855,4 @@ export default function AdminPage() {
     </main>
   );
 }
+
